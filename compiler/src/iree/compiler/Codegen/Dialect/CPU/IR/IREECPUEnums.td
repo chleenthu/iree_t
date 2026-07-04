@@ -172,6 +172,15 @@ def MMA_ARM_SVE_FMLA_1x4VLx1_F32_F32
 def MMA_ARM_SVE_FMLA_4VLx1x1_F32_F32
     : I32EnumAttrCase<"MMA_ARM_SVE_FMLA_4VLx1x1_F32_F32", 0x2211>;
 
+// RISC-V "V" vector extension. VLMAX=16 lanes of f32 is guaranteed by the
+// V-extension's minimum-VLEN=128b + LMUL=4 (matches the runtime tile size
+// the old mmt4d ukernel already assumed: M=7,N=16,K=1 minus the M-unroll,
+// which the new framework's intrinsics_m loop now handles generically).
+def MMA_RISCV_V_1x16x1_F32_F32
+    : I32EnumAttrCase<"MMA_RISCV_V_1x16x1_F32_F32", 0x3110>;
+def MMA_RISCV_V_16x1x1_F32_F32
+    : I32EnumAttrCase<"MMA_RISCV_V_16x1x1_F32_F32", 0x3111>;
+
 // Architecture-agnostic, type-polymorphic generic-scalar fallback. Tile
 // shape is 1×1×1, lowering is a single `vector.contract` over the
 // unrolled (`intrinsics_m`, `intrinsics_n`, `intrinsics_k`) tile. Unlike
@@ -219,6 +228,9 @@ def IREECPU_MMAIntrinsic
 
            // Arm SVE
            MMA_ARM_SVE_FMLA_1x4VLx1_F32_F32, MMA_ARM_SVE_FMLA_4VLx1x1_F32_F32,
+
+           // RISCV V
+           MMA_RISCV_V_1x16x1_F32_F32, MMA_RISCV_V_16x1x1_F32_F32,
 
            // Architecture-agnostic generic-scalar fallback (type-polymorphic).
            MMA_GENERIC_SCALAR_1x1x1_REG8, MMA_GENERIC_SCALAR_1x1x1_REG16]>;

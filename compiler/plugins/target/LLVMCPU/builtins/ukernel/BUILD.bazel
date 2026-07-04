@@ -72,6 +72,19 @@ X86_64_UKERNELS = [
     internal_hdrs = ["common.h"],
 ) for (stem, features, copts) in X86_64_UKERNELS]
 
+RISCV_64_V_COPTS = ["-march=rv64gcv"]
+RISCV_64_UKERNELS = [
+    ("iree_uk_mma_riscv_v_1x16x1_f32_f32", "v", RISCV_64_V_COPTS),
+]
+[iree_bitcode_library(
+    name = "%s_riscv_64_%s" % (stem, features),
+    srcs = ["%s.c" % stem],
+    out = "%s.riscv_64_%s.bc" % (stem, features),
+    arch = "riscv_64",
+    copts = copts,
+    internal_hdrs = ["common.h"],
+) for (stem, features, copts) in RISCV_64_UKERNELS]
+
 #===------------------------------------------------------------------------===#
 # Embedded bitcode TOC
 #===------------------------------------------------------------------------===#
@@ -81,6 +94,9 @@ iree_c_embed_data(
     srcs = [
         ":%s.x86_64_%s.bc" % (stem, features)
         for (stem, features, copts) in X86_64_UKERNELS
+    ] + [
+        ":%s.riscv_64_%s.bc" % (stem, features)
+        for (stem, features, copts) in RISCV_64_UKERNELS
     ],
     c_file_output = "iree_uk_cpu_bitcode.c",
     flatten = True,
