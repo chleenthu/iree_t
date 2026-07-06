@@ -382,10 +382,10 @@ getRowMajorTilesMNKShape(MMAIntrinsic intrinsic) {
   // ACC tile has a non-row-major layout, hand-rolled in `getIntrinsicSwizzle`.
   case MMAIntrinsic::MMA_X86_AVX512VNNI_16x16x2_I32_I8_CASTI16:
     return Tuple{16, 16, 2};
-  case MMAIntrinsic::MMA_RISCV_V_1x16x1_F32_F32:
-    return Tuple{1, 16, 1};
-  case MMAIntrinsic::MMA_RISCV_V_16x1x1_F32_F32:
-    return Tuple{16, 1, 1};
+  case MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32:
+    return Tuple{7, 32, 1};
+  case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
+    return Tuple{32, 7, 1};
   default:
     if (isGenericScalar(intrinsic)) {
       return Tuple{1, 1, 1};
@@ -631,8 +631,8 @@ std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *ctx,
   case MMAIntrinsic::MMA_ARM_SVE_FMLA_1x4VLx1_F32_F32:
   case MMAIntrinsic::MMA_ARM_SVE_FMLA_4VLx1x1_F32_F32:
     return {f32, f32, f32};
-  case MMAIntrinsic::MMA_RISCV_V_1x16x1_F32_F32:
-  case MMAIntrinsic::MMA_RISCV_V_16x1x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
     return {f32, f32, f32};
   default:
     return {Type(), Type(), Type()};

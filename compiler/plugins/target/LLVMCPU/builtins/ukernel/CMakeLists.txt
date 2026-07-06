@@ -49,15 +49,15 @@ iree_bitcode_library(
 
 iree_bitcode_library(
   NAME
-    iree_uk_mma_riscv_v_1x16x1_f32_f32_riscv_64_v
+    iree_uk_mma_riscv_v_7x32x1_f32_f32_riscv_64_v
   ARCH
     riscv_64
   OUT
-    "iree_uk_mma_riscv_v_1x16x1_f32_f32.riscv_64_v.bc"
+    "iree_uk_mma_riscv_v_7x32x1_f32_f32.riscv_64_v.bc"
   INTERNAL_HDRS
     "common.h"
   SRCS
-    "iree_uk_mma_riscv_v_1x16x1_f32_f32.c"
+    "iree_uk_mma_riscv_v_7x32x1_f32_f32.c"
   COPTS
     "-march=rv64gcv"
 )
@@ -66,7 +66,7 @@ iree_c_embed_data(
   NAME
     iree_uk_cpu_bitcode
   SRCS
-    "iree_uk_mma_riscv_v_1x16x1_f32_f32.riscv_64_v.bc"
+    "iree_uk_mma_riscv_v_7x32x1_f32_f32.riscv_64_v.bc"
     "iree_uk_mma_x86_avx512bf16_1x16x2_f32_bf16.x86_64_avx512bf16.bc"
     "iree_uk_mma_x86_avx512vnni_16x16x2_i32_i8_casti16.x86_64_avx512vnni.bc"
   C_FILE_OUTPUT

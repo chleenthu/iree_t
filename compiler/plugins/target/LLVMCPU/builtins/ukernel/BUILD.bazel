@@ -74,7 +74,7 @@ X86_64_UKERNELS = [
 
 RISCV_64_V_COPTS = ["-march=rv64gcv"]
 RISCV_64_UKERNELS = [
-    ("iree_uk_mma_riscv_v_1x16x1_f32_f32", "v", RISCV_64_V_COPTS),
+    ("iree_uk_mma_riscv_v_7x32x1_f32_f32", "v", RISCV_64_V_COPTS),
 ]
 [iree_bitcode_library(
     name = "%s_riscv_64_%s" % (stem, features),

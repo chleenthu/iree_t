@@ -359,8 +359,8 @@ getMmaIntrinsicRequiredFeatures(IREE::CPU::MMAIntrinsic intr) {
   case MMAIntrinsic::MMA_X86_AVX512VNNI_16x1x4_I32_I8_UI8:
   case MMAIntrinsic::MMA_X86_AVX512VNNI_16x16x2_I32_I8_CASTI16:
     return {"+avx512vnni"};
-  case MMAIntrinsic::MMA_RISCV_V_1x16x1_F32_F32:
-  case MMAIntrinsic::MMA_RISCV_V_16x1x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
     return {"+v"};
   default:
     return {};
@@ -532,8 +532,8 @@ getMmaIntrinsicsForTargetConfig(DictionaryAttr config) {
   }
   if (isRISCV64(config)) {
     static const MMAIntrinsic kAllRISCV[] = {
-        MMAIntrinsic::MMA_RISCV_V_1x16x1_F32_F32,
-        MMAIntrinsic::MMA_RISCV_V_16x1x1_F32_F32,
+        MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32,
+        MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32,
     };
     for (MMAIntrinsic intr : kAllRISCV) {
       SmallVector<StringRef> required = getMmaIntrinsicRequiredFeatures(intr);

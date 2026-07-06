@@ -18,6 +18,21 @@
 #define COMPILER_PLUGINS_TARGET_LLVMCPU_BUILTINS_UKERNEL_COMMON_H_
 
 //===----------------------------------------------------------------------===//
+// Attributes and metadata
+//===----------------------------------------------------------------------===//
+
+// IREE_UK_UNROLL: request full unrolling of loops with constant trip count.
+#if defined(IREE_UK_COMPILER_CLANG)
+#define IREE_UK_UNROLL _Pragma("clang loop unroll(full)")
+#elif defined(IREE_UK_COMPILER_GCC)
+// GCC requires passing a max unroll factor. 64 should be enough for anybody.
+#define IREE_UK_UNROLL _Pragma("GCC unroll 64")
+#else
+// MSVC doesn't have a pragma unroll.
+#define IREE_UK_UNROLL
+#endif  // defined(IREE_UK_COMPILER_CLANG)
+
+//===----------------------------------------------------------------------===//
 // Local replacements for stdint.h, using Clang's predefined type macros.
 //===----------------------------------------------------------------------===//
 
