@@ -386,6 +386,10 @@ getRowMajorTilesMNKShape(MMAIntrinsic intrinsic) {
     return Tuple{7, 32, 1};
   case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
     return Tuple{32, 7, 1};
+  case MMAIntrinsic::MMA_RISCV_IME_8x16x8_I32_I8:
+    return Tuple{8, 16, 8};
+  case MMAIntrinsic::MMA_RISCV_IME_16x8x8_I32_I8:
+    return Tuple{16, 8, 8};
   default:
     if (isGenericScalar(intrinsic)) {
       return Tuple{1, 1, 1};
@@ -407,6 +411,7 @@ constexpr uint32_t kMMAIntrinsicISAX86Avx2 = 0x1200;
 constexpr uint32_t kMMAIntrinsicISAX86Avx512 = 0x1300;
 constexpr uint32_t kMMAIntrinsicISAArmSve = 0x2200;
 constexpr uint32_t kMMAIntrinsicISARiscvV = 0x3100;
+constexpr uint32_t kMMAIntrinsicISARiscvIme = 0x3200;
 
 bool isGenericScalar(MMAIntrinsic intr) {
   return (static_cast<uint32_t>(intr) & kMMAIntrinsicISAMask) ==
@@ -436,6 +441,8 @@ int64_t getRegisterSpaceBytes(MMAIntrinsic intrinsic) {
     return 32 * 16;
   case kMMAIntrinsicISARiscvV: // 32 V-regs × 128b min VLEN.
     return 32 * 16;
+  case kMMAIntrinsicISARiscvIme:
+    return 32 * 32;
   default:
     // Plausible default, but override it on each arch you care for.
     return 16 * 32;
@@ -634,6 +641,9 @@ std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *ctx,
   case MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32:
   case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
     return {f32, f32, f32};
+  case MMAIntrinsic::MMA_RISCV_IME_8x16x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_IME_16x8x8_I32_I8:
+    return {i8, i8, i32};
   default:
     return {Type(), Type(), Type()};
   }
