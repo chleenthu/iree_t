@@ -361,9 +361,13 @@ getMmaIntrinsicRequiredFeatures(IREE::CPU::MMAIntrinsic intr) {
     return {"+avx512vnni"};
   case MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32:
   case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_1x32x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_32x1x1_F32_F32:
     return {"+v"};
   case MMAIntrinsic::MMA_RISCV_IME_8x16x8_I32_I8:
   case MMAIntrinsic::MMA_RISCV_IME_16x8x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_IME_1x16x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_IME_16x1x8_I32_I8:
     return {"+xsmtvdot"};
   default:
     return {};
@@ -537,8 +541,12 @@ getMmaIntrinsicsForTargetConfig(DictionaryAttr config) {
     static const MMAIntrinsic kAllRISCV[] = {
         MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32,
         MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32,
+        MMAIntrinsic::MMA_RISCV_V_1x32x1_F32_F32,
+        MMAIntrinsic::MMA_RISCV_V_32x1x1_F32_F32,
         MMAIntrinsic::MMA_RISCV_IME_8x16x8_I32_I8,
         MMAIntrinsic::MMA_RISCV_IME_16x8x8_I32_I8,
+        MMAIntrinsic::MMA_RISCV_IME_1x16x8_I32_I8,
+        MMAIntrinsic::MMA_RISCV_IME_16x1x8_I32_I8,
     };
     for (MMAIntrinsic intr : kAllRISCV) {
       SmallVector<StringRef> required = getMmaIntrinsicRequiredFeatures(intr);
@@ -614,9 +622,14 @@ getIntrinsicInfo(MLIRContext *ctx, ArrayRef<Type> elementTypes,
 /// static matmul dim — i.e. it charges the intrinsic for the padding it
 /// would force. A dynamic matmul dim is treated as "not narrow" (the full
 /// intrinsic size counts toward usefulOps). Ties are broken by the raw
-/// intrinsic size `intrinsicM*intrinsicN*intrinsicK` (prefer the bigger
-/// intrinsic: it gives the Phase-2 register budget more tiles to play with)
-/// and, finally, by iteration order. The natural and M↔N-swapped
+/// intrinsic size `intrinsicM*intrinsicN*intrinsicK`, preferring the
+/// *smaller* intrinsic: a tie means the extra rows/cols of the bigger tile
+/// land entirely in padding (some narrow static dim), so the smaller tile
+/// does the same useful work with less wasted compute, and Phase 2 can
+/// still unroll it back up to fill the register budget. This is what makes
+/// a decode GEMV (M=1) pick the M0=1 companion of an M0>1 intrinsic instead
+/// of padding M. Finally, ties break by iteration order. The natural and
+/// M↔N-swapped
 /// orientations of each hardware MMA appear as distinct enum values in the
 /// candidate list, so the choice between them falls out of this same
 /// scoring loop. `K` is never narrow for optimization purposes, so it never
@@ -644,7 +657,9 @@ chooseIntrinsic(MLIRContext *ctx, ArrayRef<Type> elementTypes,
                         usefulSize(matmulSizes.N, info->intrinsicN) *
                         info->intrinsicK;
     int64_t rawOps = info->intrinsicM * info->intrinsicN * info->intrinsicK;
-    std::pair<int64_t, int64_t> score = {usefulOps, rawOps};
+    // Secondary key negated: on equal usefulOps, smaller rawOps (less
+    // padding) wins.
+    std::pair<int64_t, int64_t> score = {usefulOps, -rawOps};
     if (score > bestScore) {
       bestScore = score;
       best = intr;
@@ -833,28 +848,50 @@ static Operation *lowerContractionToInnerTiled(
   }
 
   auto cDims = linalg::inferContractionDims(linalgOp);
-  if (!cDims->batch.empty()) {
-    LDBG() << "inner_tiled lowering: batched contraction not implemented";
+  // A single batch dimension (the `bs` dim of an LLM matmul) is carried
+  // through as an extra leading parallel iter dim on the `inner_tiled` op --
+  // the same way the mmt4d path emits `linalg.batch_mmt4d`. The packed
+  // operands keep their leading batch dim; `setRootConfig` for `InnerTiledOp`
+  // is generic over the number of loops, and `handleInnerTiledMmaUkernel`
+  // locates the K-outer dim from the indexing maps.
+  if (cDims->batch.size() > 1) {
+    LDBG() << "inner_tiled lowering: >1 batch dim not implemented";
     return nullptr;
   }
+  bool hasBatch = !cDims->batch.empty();
 
   MLIRContext *ctx = builder.getContext();
   Location loc = linalgOp.getLoc();
   AffineExpr d0 = builder.getAffineDimExpr(0);
   AffineExpr d1 = builder.getAffineDimExpr(1);
   AffineExpr d2 = builder.getAffineDimExpr(2);
-  // RHS uses (d1, d2) i.e. (N_iter, K_iter) outer ordering — mmt4d-style — to
-  // match the packed RHS operand shape produced upstream (the RHS pack uses
-  // `outer_dims_perm = [1, 0]` so its outer dims come out as N_iter, K_iter,
-  // not K_iter, N_iter).
-  SmallVector<AffineMap> indexingMaps = {
-      AffineMap::get(3, 0, {d0, d2}, ctx),
-      AffineMap::get(3, 0, {d1, d2}, ctx),
-      AffineMap::get(3, 0, {d0, d1}, ctx),
-  };
-  SmallVector<utils::IteratorType> iteratorTypes = {
-      utils::IteratorType::parallel, utils::IteratorType::parallel,
-      utils::IteratorType::reduction};
+  AffineExpr d3 = builder.getAffineDimExpr(3);
+  // Outer iter dims are (M, N, K), optionally prefixed by a batch dim B.
+  // RHS uses (.., N_iter, K_iter) ordering — mmt4d-style — to match the
+  // packed RHS operand shape produced upstream (the RHS pack uses
+  // `outer_dims_perm` so its outer dims come out as N_iter, K_iter).
+  SmallVector<AffineMap> indexingMaps;
+  SmallVector<utils::IteratorType> iteratorTypes;
+  if (hasBatch) {
+    AffineExpr b = d0, m = d1, n = d2, k = d3;
+    indexingMaps = {
+        AffineMap::get(4, 0, {b, m, k}, ctx),
+        AffineMap::get(4, 0, {b, n, k}, ctx),
+        AffineMap::get(4, 0, {b, m, n}, ctx),
+    };
+    iteratorTypes = {
+        utils::IteratorType::parallel, utils::IteratorType::parallel,
+        utils::IteratorType::parallel, utils::IteratorType::reduction};
+  } else {
+    indexingMaps = {
+        AffineMap::get(3, 0, {d0, d2}, ctx),
+        AffineMap::get(3, 0, {d1, d2}, ctx),
+        AffineMap::get(3, 0, {d0, d1}, ctx),
+    };
+    iteratorTypes = {utils::IteratorType::parallel,
+                     utils::IteratorType::parallel,
+                     utils::IteratorType::reduction};
+  }
 
   DictionaryAttr targetConfig;
   if (auto cpuResolver = dyn_cast<IREE::CPU::CPUEncodingResolverAttr>(
@@ -1395,8 +1432,20 @@ private:
     // `getSwizzledShape` applies the `expand_shape` + `transpose` to the
     // inner tile, matching the permutation-aware tile type that
     // `DataTiledMMAAttr::getUndistributedTileTypes` returns. Mirrors GPU.
-    info.swizzle =
+    //
+    // A swizzle only reorders elements *within* an inner tile, so it is only
+    // meaningful when the operand is tiled along the same number of dims the
+    // intrinsic's (M,N)/(M,K)/(N,K) swizzle describes. Quantized-matmul
+    // sub-operands carry a reduced-rank indexing map -- e.g. a per-N result
+    // scale maps to `(d2)` only -- for which `getEncodingInfoForMatmul`
+    // (correctly) produces fewer inner tile dims. There is nothing to
+    // reorder in that case: fall back to the plain, un-swizzled pack, the
+    // same layout the legacy mmt4d path uses for these operands.
+    IREE::Codegen::TileSwizzle swizzle =
         IREE::CPU::getSwizzle(mma, encoding.getOperandIndex().getInt());
+    if (swizzle.expandShape().size() == info.innerTileSizes.size()) {
+      info.swizzle = std::move(swizzle);
+    }
     return info;
   }
 };

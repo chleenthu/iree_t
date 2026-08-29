@@ -386,10 +386,18 @@ getRowMajorTilesMNKShape(MMAIntrinsic intrinsic) {
     return Tuple{7, 32, 1};
   case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
     return Tuple{32, 7, 1};
+  case MMAIntrinsic::MMA_RISCV_V_1x32x1_F32_F32:
+    return Tuple{1, 32, 1};
+  case MMAIntrinsic::MMA_RISCV_V_32x1x1_F32_F32:
+    return Tuple{32, 1, 1};
   case MMAIntrinsic::MMA_RISCV_IME_8x16x8_I32_I8:
     return Tuple{8, 16, 8};
   case MMAIntrinsic::MMA_RISCV_IME_16x8x8_I32_I8:
     return Tuple{16, 8, 8};
+  case MMAIntrinsic::MMA_RISCV_IME_1x16x8_I32_I8:
+    return Tuple{1, 16, 8};
+  case MMAIntrinsic::MMA_RISCV_IME_16x1x8_I32_I8:
+    return Tuple{16, 1, 8};
   default:
     if (isGenericScalar(intrinsic)) {
       return Tuple{1, 1, 1};
@@ -640,9 +648,13 @@ std::tuple<Type, Type, Type> getABCElementTypes(MLIRContext *ctx,
     return {f32, f32, f32};
   case MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32:
   case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_1x32x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_32x1x1_F32_F32:
     return {f32, f32, f32};
   case MMAIntrinsic::MMA_RISCV_IME_8x16x8_I32_I8:
   case MMAIntrinsic::MMA_RISCV_IME_16x8x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_IME_1x16x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_IME_16x1x8_I32_I8:
     return {i8, i8, i32};
   default:
     return {Type(), Type(), Type()};
@@ -808,6 +820,49 @@ static Value lowerX86Avx512Vnni16x16x2I8(OpBuilder &b, Location loc, Value lhs,
   return result;
 }
 
+// SpaceMiT IME (`smt.vmadot`) and RVV "V" MMA tiles have no LLVM intrinsic —
+// they are served by C ukernels (inline asm). Fallback used by
+// `createCpuMmaIntrinsicCall` when the ukernel bitcode isn't linked: lower one
+// intrinsic tile to a plain `vector.contract` (row-major (M0,K0)/(N0,K0)/
+// (M0,N0), the order the CPU swizzle produces), so the data-tiled
+// `inner_tiled` path still lowers. RISC-V IME/V operands are signed-int/float.
+static Value emitRiscvMmaTileContract(OpBuilder &builder, Location loc,
+                                      MMAIntrinsic intrinsic, Value lhs,
+                                      Value rhs, Value acc) {
+  auto mnk = getRowMajorTilesMNKShape(intrinsic);
+  if (!mnk)
+    return {};
+  auto [m0, n0, k0] = *mnk;
+  auto accTy = cast<VectorType>(acc.getType());
+  Type accElem = accTy.getElementType();
+  auto reshape = [&](Value v, ArrayRef<int64_t> s) -> Value {
+    auto vt = cast<VectorType>(v.getType());
+    auto t = VectorType::get(s, vt.getElementType());
+    return vt == t ? v : vector::ShapeCastOp::create(builder, loc, t, v);
+  };
+  auto widen = [&](Value v) -> Value {
+    auto vt = cast<VectorType>(v.getType());
+    if (vt.getElementType() == accElem)
+      return v;
+    auto w = VectorType::get(vt.getShape(), accElem);
+    return isa<FloatType>(accElem)
+               ? Value(arith::ExtFOp::create(builder, loc, w, v))
+               : Value(arith::ExtSIOp::create(builder, loc, w, v));
+  };
+  Value l = widen(reshape(lhs, {m0, k0}));
+  Value r = widen(reshape(rhs, {n0, k0}));
+  AffineExpr m = builder.getAffineDimExpr(0), n = builder.getAffineDimExpr(1),
+            k = builder.getAffineDimExpr(2);
+  using MapList = ArrayRef<ArrayRef<AffineExpr>>;
+  Value res = vector::ContractionOp::create(
+      builder, loc, l, r, reshape(acc, {m0, n0}),
+      MapList{{m, k}, {n, k}, {m, n}},
+      ArrayRef<vector::IteratorType>{vector::IteratorType::parallel,
+                                    vector::IteratorType::parallel,
+                                    vector::IteratorType::reduction});
+  return reshape(res, accTy.getShape());
+}
+
 // Lowers a MMAIntrinsic to a llvm.call_intrinsic op, plus any necessary
 // additional ops (potentially broadcasting or widening LHS/RHS or creating an
 // add op if the intrinsic isn't already adding the accumulator).
@@ -818,6 +873,19 @@ static Value createCpuMmaIntrinsicCall(OpBuilder &builder, Location loc,
   // shuffle scheme; it bypasses the per-row widen + broadcast path below.
   if (intrinsic == MMAIntrinsic::MMA_X86_AVX512VNNI_16x16x2_I32_I8_CASTI16) {
     return lowerX86Avx512Vnni16x16x2I8(builder, loc, lhs, rhs, acc);
+  }
+  switch (intrinsic) {
+  case MMAIntrinsic::MMA_RISCV_IME_8x16x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_IME_16x8x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_IME_1x16x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_IME_16x1x8_I32_I8:
+  case MMAIntrinsic::MMA_RISCV_V_7x32x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_32x7x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_1x32x1_F32_F32:
+  case MMAIntrinsic::MMA_RISCV_V_32x1x1_F32_F32:
+    return emitRiscvMmaTileContract(builder, loc, intrinsic, lhs, rhs, acc);
+  default:
+    break;
   }
   // Sign-/float-extend a vector to a wider element type. Used by the
   // *_CASTF32 (f16 → f32) and *_CASTI16 (i8 → i16) variants where the
@@ -1293,11 +1361,21 @@ handleInnerTiledMmaUkernel(RewriterBase &rewriter, StringRef name,
   auto constI32 = [&](int64_t v) {
     return arith::ConstantIntOp::create(rewriter, loc, i32, v);
   };
-  // Outer-K tile count: the LHS operand's outer dims are (m_outer, k_outer),
-  // so dim 1 is the K-tile count the ukernel loops over.
+  // Outer-K tile count: the ukernel loops over the LHS operand's K-outer dim.
+  // Its position in the LHS operand is where the LHS indexing map projects the
+  // reduction iter dim -- dim 1 for an (M_outer, K_outer) LHS, dim 2 when a
+  // leading batch dim is present.
+  SmallVector<utils::IteratorType> iterTypes = op.getIteratorTypesArray();
+  auto *redIt = llvm::find(iterTypes, utils::IteratorType::reduction);
+  assert(redIt != iterTypes.end() && "inner_tiled MMA must have a reduction");
+  auto kDimExpr = rewriter.getAffineDimExpr(
+      std::distance(iterTypes.begin(), redIt));
+  std::optional<unsigned> kPos =
+      op.getIndexingMapsArray()[0].getResultPosition(kDimExpr);
+  assert(kPos && "LHS indexing map must reference the reduction dim");
   Value kOuter = arith::IndexCastOp::create(
       rewriter, loc, i32,
-      tensor::DimOp::create(rewriter, loc, op.getInputs()[0], 1));
+      tensor::DimOp::create(rewriter, loc, op.getInputs()[0], *kPos));
   // All shaped operands (LHS, RHS, ACC) are passed as `(base, offset)` only;
   // `num_strided_outer_dims=0` means no stride arguments are appended.
   DictionaryAttr discardableAttrs = op->getDiscardableAttrDictionary();

@@ -102,23 +102,21 @@ void iree_uk_mma_riscv_ime_8x16x8_i32_i8(
   const int8_t *rhs = (const int8_t *)rhs_base + rhs_offset;
   int32_t *acc = (int32_t *)acc_base + acc_offset;
 
-  // vl=32 at SEW=8 is what selects the 4x4x8 (atom=4) IME MAC unit.
   const size_t vl_i8 = kImeSubPanelBytes;
   const size_t vl_acc = kImeSubAccElems;
   const vuint32m2_t acc_idx = iree_uk_mma_riscv_ime_acc_index();
 
-  // Byte stride between consecutive intrinsics-M / intrinsics-N panels, and
-  // between consecutive outer-K steps, within the packed operands.
   const int64_t lhs_im_stride = (int64_t)intrinsics_k * kImeLhsPanelBytes;
   const int64_t rhs_in_stride = (int64_t)intrinsics_k * kImeRhsPanelBytes;
   const int64_t lhs_ko_stride = (int64_t)intrinsics_m * lhs_im_stride;
   const int64_t rhs_ko_stride = (int64_t)intrinsics_n * rhs_in_stride;
 
+  const int64_t total_k = (int64_t)k_outer * intrinsics_k;
+
   for (int32_t im = 0; im < intrinsics_m; ++im) {
     for (int32_t in = 0; in < intrinsics_n; ++in) {
       int32_t *frag =
           acc + (int64_t)(im * intrinsics_n + in) * kImeAccFragElems;
-      // Base of sub-block (mi, ni) within the row-major 8x16 fragment.
 #define IME_SUB(mi, ni) (frag + ((mi) * kImeAtom) * kImeN0 + (ni) * kImeAtom)
 
       vint32m2_t c00 = __riscv_vluxei32_v_i32m2(IME_SUB(0, 0), acc_idx, vl_acc);
@@ -133,37 +131,34 @@ void iree_uk_mma_riscv_ime_8x16x8_i32_i8(
       const int8_t *lhs_blk = lhs + (int64_t)im * lhs_im_stride;
       const int8_t *rhs_blk = rhs + (int64_t)in * rhs_in_stride;
 
-      for (int32_t ko = 0; ko < k_outer; ++ko) {
-        const int8_t *lhs_ko = lhs_blk + (int64_t)ko * lhs_ko_stride;
-        const int8_t *rhs_ko = rhs_blk + (int64_t)ko * rhs_ko_stride;
-        IREE_UK_UNROLL for (int32_t ik = 0; ik < intrinsics_k; ++ik) {
-          const int8_t *lp = lhs_ko + (int64_t)ik * kImeLhsPanelBytes;
-          const int8_t *rp = rhs_ko + (int64_t)ik * kImeRhsPanelBytes;
-          // LHS row-group mi and RHS col-group ni are contiguous 4x8 = 32-byte
-          // sub-panels of the row-major 8x8 / 16x8 packed panels.
-          vint8m1_t a0 = __riscv_vle8_v_i8m1(lp + 0 * kImeSubPanelBytes, vl_i8);
-          vint8m1_t a1 = __riscv_vle8_v_i8m1(lp + 1 * kImeSubPanelBytes, vl_i8);
-          vint8m1_t b0 = __riscv_vle8_v_i8m1(rp + 0 * kImeSubPanelBytes, vl_i8);
-          vint8m1_t b1 = __riscv_vle8_v_i8m1(rp + 1 * kImeSubPanelBytes, vl_i8);
-          vint8m1_t b2 = __riscv_vle8_v_i8m1(rp + 2 * kImeSubPanelBytes, vl_i8);
-          vint8m1_t b3 = __riscv_vle8_v_i8m1(rp + 3 * kImeSubPanelBytes, vl_i8);
-          // One vtype set, then 8 back-to-back smt.vmadot over the 2x4 grid.
-          __asm__ volatile(
-              "vsetvli zero, %[vl], e8, m1, ta, ma\n\t"
-              "smt.vmadot %[d0], %[a0], %[b0]\n\t"
-              "smt.vmadot %[d1], %[a0], %[b1]\n\t"
-              "smt.vmadot %[d2], %[a0], %[b2]\n\t"
-              "smt.vmadot %[d3], %[a0], %[b3]\n\t"
-              "smt.vmadot %[d4], %[a1], %[b0]\n\t"
-              "smt.vmadot %[d5], %[a1], %[b1]\n\t"
-              "smt.vmadot %[d6], %[a1], %[b2]\n\t"
-              "smt.vmadot %[d7], %[a1], %[b3]\n\t"
-              : [d0] "+vr"(c00), [d1] "+vr"(c01), [d2] "+vr"(c02),
-                [d3] "+vr"(c03), [d4] "+vr"(c10), [d5] "+vr"(c11),
-                [d6] "+vr"(c12), [d7] "+vr"(c13)
-              : [a0] "vr"(a0), [a1] "vr"(a1), [b0] "vr"(b0), [b1] "vr"(b1),
-                [b2] "vr"(b2), [b3] "vr"(b3), [vl] "r"(vl_i8));
-        }
+      for (int64_t k = 0; k < total_k; ++k) {
+        const int32_t ko = (int32_t)(k / intrinsics_k);
+        const int32_t ik = (int32_t)(k % intrinsics_k);
+        const int8_t *lp = lhs_blk + (int64_t)ko * lhs_ko_stride +
+                            (int64_t)ik * kImeLhsPanelBytes;
+        const int8_t *rp = rhs_blk + (int64_t)ko * rhs_ko_stride +
+                            (int64_t)ik * kImeRhsPanelBytes;
+        vint8m1_t a0 = __riscv_vle8_v_i8m1(lp + 0 * kImeSubPanelBytes, vl_i8);
+        vint8m1_t a1 = __riscv_vle8_v_i8m1(lp + 1 * kImeSubPanelBytes, vl_i8);
+        vint8m1_t b0 = __riscv_vle8_v_i8m1(rp + 0 * kImeSubPanelBytes, vl_i8);
+        vint8m1_t b1 = __riscv_vle8_v_i8m1(rp + 1 * kImeSubPanelBytes, vl_i8);
+        vint8m1_t b2 = __riscv_vle8_v_i8m1(rp + 2 * kImeSubPanelBytes, vl_i8);
+        vint8m1_t b3 = __riscv_vle8_v_i8m1(rp + 3 * kImeSubPanelBytes, vl_i8);
+        __asm__ volatile(
+            "vsetvli zero, %[vl], e8, m1, ta, ma\n\t"
+            "smt.vmadot %[d0], %[a0], %[b0]\n\t"
+            "smt.vmadot %[d1], %[a0], %[b1]\n\t"
+            "smt.vmadot %[d2], %[a0], %[b2]\n\t"
+            "smt.vmadot %[d3], %[a0], %[b3]\n\t"
+            "smt.vmadot %[d4], %[a1], %[b0]\n\t"
+            "smt.vmadot %[d5], %[a1], %[b1]\n\t"
+            "smt.vmadot %[d6], %[a1], %[b2]\n\t"
+            "smt.vmadot %[d7], %[a1], %[b3]\n\t"
+            : [d0] "+vr"(c00), [d1] "+vr"(c01), [d2] "+vr"(c02),
+              [d3] "+vr"(c03), [d4] "+vr"(c10), [d5] "+vr"(c11),
+              [d6] "+vr"(c12), [d7] "+vr"(c13)
+            : [a0] "vr"(a0), [a1] "vr"(a1), [b0] "vr"(b0), [b1] "vr"(b1),
+              [b2] "vr"(b2), [b3] "vr"(b3), [vl] "r"(vl_i8));
       }
 
       __riscv_vsuxei32_v_i32m2(IME_SUB(0, 0), acc_idx, c00, vl_acc);

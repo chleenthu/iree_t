@@ -134,6 +134,15 @@ static bool isSupportedContractionOp(linalg::LinalgOp linalgOp) {
   if ((cDims->n.empty() && cDims->m.empty()) || cDims->k.empty()) {
     return false;
   }
+  // A statically-unit reduction dim makes this a broadcast/outer-product, not
+  // a matmul: data tiling it only pads a 1-wide K up to a full intrinsic tile
+  // and gains nothing, while forcing the codegen/ukernel path to handle a
+  // degenerate contraction. (Seen on Llama's RoPE frequency `1x32x1x1`
+  // batch_matmul.) Leave it to plain codegen.
+  SmallVector<int64_t> loopRanges = linalgOp.getStaticLoopRanges();
+  if (loopRanges[cDims->k[0]] == 1) {
+    return false;
+  }
   if (!hasMatmulLikeBody(linalgOp)) {
     return false;
   }

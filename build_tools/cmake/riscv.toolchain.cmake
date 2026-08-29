@@ -64,7 +64,6 @@ if(RISCV_CPU STREQUAL "linux-riscv_64")
     "--iree-llvmcpu-target-triple=riscv64"
     "--iree-llvmcpu-target-abi=lp64d"
     "--iree-llvmcpu-target-cpu-features=+m,+a,+f,+d,+c,+zvl512b,+v"
-    "--riscv-v-fixed-length-vector-lmul-max=8"
     CACHE INTERNAL "Default llvm codegen flags for testing purposes")
 elseif(RISCV_CPU STREQUAL "generic-riscv_64")
   # Specify ISP spec for march=rv64gc. This is to resolve the mismatch between
@@ -89,7 +88,6 @@ elseif(RISCV_CPU STREQUAL "linux-riscv_32")
     "--iree-llvmcpu-target-triple=riscv32"
     "--iree-llvmcpu-target-abi=ilp32d"
     "--iree-llvmcpu-target-cpu-features=+m,+a,+f,+d,+zvl512b,+zve32f"
-    "--riscv-v-fixed-length-vector-lmul-max=8"
     CACHE INTERNAL "Default llvm codegen flags for testing purposes")
 elseif(RISCV_CPU STREQUAL "generic-riscv_32")
   set(CMAKE_SYSROOT "${RISCV_TOOLCHAIN_ROOT}/${RISCV_TOOLCHAIN_PREFIX}")
